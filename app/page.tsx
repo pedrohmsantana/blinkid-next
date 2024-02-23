@@ -1,113 +1,177 @@
-import Image from "next/image";
+"use client";
+import { useEffect } from "react";
+import * as BlinkIDSDK from "@microblink/blinkid-in-browser-sdk";
 
 export default function Home() {
+  useEffect(() => {
+    const initialMessageEl = document.getElementById(
+      "msg"
+    ) as HTMLHeadingElement;
+    const progressEl = document.getElementById(
+      "load-progress"
+    ) as HTMLProgressElement;
+    const cameraFeed = document.getElementById(
+      "camera-feed"
+    ) as HTMLVideoElement;
+    const scanFeedback = document.getElementById(
+      "camera-guides"
+    ) as HTMLParagraphElement;
+    if (!BlinkIDSDK.isBrowserSupported()) {
+      initialMessageEl.innerText = "This browser is not supported!";
+      return;
+    }
+    const licenseKey = process.env.NEXT_PUBLIC_BLINKID_LICENSE_KEY || "";
+
+    // 2. Create instance of SDK load settings with your license key
+    const loadSettings = new BlinkIDSDK.WasmSDKLoadSettings(licenseKey);
+
+    // [OPTIONAL] Change default settings
+
+    // Show or hide hello message in browser console when WASM is successfully loaded
+    loadSettings.allowHelloMessage = true;
+
+    // In order to provide better UX, display progress bar while loading the SDK
+    loadSettings.loadProgressCallback = (progress: number) =>
+      (progressEl!.value = progress);
+
+    // Set absolute location of the engine, i.e. WASM and support JS files
+    loadSettings.engineLocation = window.location.origin + "/resources";
+
+    // Set absolute location of the worker file
+    loadSettings.workerLocation =
+      window.location.origin + "/resources/BlinkIDWasmSDK.worker.min.js";
+
+    // 3. Load SDK
+    BlinkIDSDK.loadWasmModule(loadSettings).then(
+      (sdk: BlinkIDSDK.WasmSDK) => {
+        document.getElementById("screen-initial")?.classList.add("hidden");
+        document.getElementById("screen-start")?.classList.remove("hidden");
+        document
+          .getElementById("start-scan")
+          ?.addEventListener("click", (ev: any) => {
+            ev.preventDefault();
+            startScan(sdk);
+          });
+      },
+      (error: any) => {
+        initialMessageEl.innerText = "Failed to load SDK!";
+        console.error("Failed to load SDK!", error);
+      }
+    );
+
+    async function startScan(sdk: BlinkIDSDK.WasmSDK) {
+      document.getElementById("screen-start")?.classList.add("hidden");
+      document.getElementById("screen-scanning")?.classList.remove("hidden");
+
+      // 1. Create a recognizer objects which will be used to recognize single image or stream of images.
+      //
+      const multiSideIDRecognizer =
+        await BlinkIDSDK.createBlinkIdMultiSideRecognizer(sdk);
+
+      // [OPTIONAL] Create a callbacks object that will receive recognition events, such as detected object location etc.
+
+      // 2. Create a RecognizerRunner object which orchestrates the recognition with one or more
+
+      //    recognizer objects.
+      const recognizerRunner = await BlinkIDSDK.createRecognizerRunner(
+        // SDK instance to use
+        sdk,
+
+        // List of recognizer objects that will be associated with created RecognizerRunner object
+        [multiSideIDRecognizer],
+
+        // [OPTIONAL] Should recognition pipeline stop as soon as first recognizer in chain finished recognition
+        false
+      );
+
+      // 3. Create a VideoRecognizer object and attach it to HTMLVideoElement that will be used for displaying the camera feed
+      const videoRecognizer =
+        await BlinkIDSDK.VideoRecognizer.createVideoRecognizerFromCameraStream(
+          cameraFeed,
+          recognizerRunner,
+          undefined,
+          BlinkIDSDK.PreferredCameraType.FrontFacingCamera
+        );
+
+      // 4. Start the recognition and await for the results
+
+      const processResult = await videoRecognizer.recognize();
+
+      // 5. If recognition was successful, obtain the result and display it
+      if (processResult !== BlinkIDSDK.RecognizerResultState.Empty) {
+        const singleSideIDResults = await multiSideIDRecognizer.getResult();
+        if (
+          singleSideIDResults.state !== BlinkIDSDK.RecognizerResultState.Empty
+        ) {
+          console.log(
+            "BlinkID Single-side recognizer results",
+            singleSideIDResults
+          );
+          const firstName =
+            singleSideIDResults.firstName.latin ||
+            singleSideIDResults.firstName.cyrillic ||
+            singleSideIDResults.firstName.arabic ||
+            singleSideIDResults.mrz.secondaryID;
+          const lastName =
+            singleSideIDResults.lastName.latin ||
+            singleSideIDResults.lastName.cyrillic ||
+            singleSideIDResults.lastName.arabic ||
+            singleSideIDResults.mrz.primaryID;
+          const fullName =
+            singleSideIDResults.fullName.latin ||
+            singleSideIDResults.fullName.cyrillic ||
+            singleSideIDResults.fullName.arabic ||
+            `${singleSideIDResults.mrz.secondaryID} ${singleSideIDResults.mrz.primaryID}`;
+          const dateOfBirth = {
+            year:
+              singleSideIDResults.dateOfBirth.year ||
+              singleSideIDResults.mrz.dateOfBirth.year,
+            month:
+              singleSideIDResults.dateOfBirth.month ||
+              singleSideIDResults.mrz.dateOfBirth.month,
+            day:
+              singleSideIDResults.dateOfBirth.day ||
+              singleSideIDResults.mrz.dateOfBirth.day,
+          };
+          const derivedFullName = `${firstName} ${lastName}`.trim() || fullName;
+          alert(
+            `Hello, ${derivedFullName}!\n You were born on ${dateOfBirth.year}-${dateOfBirth.month}-${dateOfBirth.day}.`
+          );
+        }
+      } else {
+        alert("Could not extract information!");
+      }
+
+      // // 7. Release all resources allocated on the WebAssembly heap and associated with camera stream
+
+      // // Release browser resources associated with the camera stream
+      videoRecognizer?.releaseVideoFeed();
+
+      // Release memory on WebAssembly heap used by the RecognizerRunner
+      recognizerRunner?.delete();
+
+      // Release memory on WebAssembly heap used by the recognizer
+      multiSideIDRecognizer?.delete();
+
+      // Hide scanning screen and show scan button again
+      document.getElementById("screen-start")?.classList.remove("hidden");
+      document.getElementById("screen-scanning")?.classList.add("hidden");
+    }
+  }, []);
   return (
-    <main className="flex min-h-screen flex-col items-center justify-between p-24">
-      <div className="z-10 max-w-5xl w-full items-center justify-between font-mono text-sm lg:flex">
-        <p className="fixed left-0 top-0 flex w-full justify-center border-b border-gray-300 bg-gradient-to-b from-zinc-200 pb-6 pt-8 backdrop-blur-2xl dark:border-neutral-800 dark:bg-zinc-800/30 dark:from-inherit lg:static lg:w-auto  lg:rounded-xl lg:border lg:bg-gray-200 lg:p-4 lg:dark:bg-zinc-800/30">
-          Get started by editing&nbsp;
-          <code className="font-mono font-bold">app/page.tsx</code>
-        </p>
-        <div className="fixed bottom-0 left-0 flex h-48 w-full items-end justify-center bg-gradient-to-t from-white via-white dark:from-black dark:via-black lg:static lg:h-auto lg:w-auto lg:bg-none">
-          <a
-            className="pointer-events-none flex place-items-center gap-2 p-8 lg:pointer-events-auto lg:p-0"
-            href="https://vercel.com?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            By{" "}
-            <Image
-              src="/vercel.svg"
-              alt="Vercel Logo"
-              className="dark:invert"
-              width={100}
-              height={24}
-              priority
-            />
-          </a>
-        </div>
+    <>
+      <div id="screen-initial">
+        <h1 id="msg">Loading...</h1>
+        <progress id="load-progress" value="0" max="100"></progress>
       </div>
-
-      <div className="relative flex place-items-center before:absolute before:h-[300px] before:w-full sm:before:w-[480px] before:-translate-x-1/2 before:rounded-full before:bg-gradient-radial before:from-white before:to-transparent before:blur-2xl before:content-[''] after:absolute after:-z-20 after:h-[180px] after:w-full sm:after:w-[240px] after:translate-x-1/3 after:bg-gradient-conic after:from-sky-200 after:via-blue-200 after:blur-2xl after:content-[''] before:dark:bg-gradient-to-br before:dark:from-transparent before:dark:to-blue-700 before:dark:opacity-10 after:dark:from-sky-900 after:dark:via-[#0141ff] after:dark:opacity-40 before:lg:h-[360px] z-[-1]">
-        <Image
-          className="relative dark:drop-shadow-[0_0_0.3rem_#ffffff70] dark:invert"
-          src="/next.svg"
-          alt="Next.js Logo"
-          width={180}
-          height={37}
-          priority
-        />
-      </div>
-
-      <div className="mb-32 grid text-center lg:max-w-5xl lg:w-full lg:mb-0 lg:grid-cols-4 lg:text-left">
-        <a
-          href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Docs{" "}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50`}>
-            Find in-depth information about Next.js features and API.
-          </p>
-        </a>
-
-        <a
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Learn{" "}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50`}>
-            Learn about Next.js in an interactive course with&nbsp;quizzes!
-          </p>
-        </a>
-
-        <a
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Templates{" "}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50`}>
-            Explore starter templates for Next.js.
-          </p>
-        </a>
-
-        <a
-          href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Deploy{" "}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50 text-balance`}>
-            Instantly deploy your Next.js site to a shareable URL with Vercel.
-          </p>
+      <div id="screen-start" className="hidden">
+        <a href="#" id="start-scan">
+          Start scan
         </a>
       </div>
-    </main>
+      <div id="screen-scanning" className="hidden">
+        <video id="camera-feed" playsInline className="w-full h-screen"></video>
+      </div>
+    </>
   );
 }
